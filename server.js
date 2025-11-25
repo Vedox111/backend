@@ -8,7 +8,7 @@ const multer = require('multer');
 const path = require('path');
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
 // Middleware
 app.use(bodyParser.json({ limit: '10mb' }));
@@ -20,16 +20,9 @@ app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
 // ✅ PostgreSQL konekcija (Render)
 const db = new Pool({
-  host: 'dpg-d4ioilnpm1nc73crji9g-a.frankfurt-postgres.render.com',
-  user: 'tkdnur_user',
-  password: 'W2E2V4G7PhIoaXvZOhISnTfO8vRzIQdC',
-  database: 'tkdnur',
-  port: 5432,
-  ssl: {
-    rejectUnauthorized: false
-  }
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
-
 db.connect()
   .then(() => console.log('✅ Spojen na PostgreSQL'))
   .catch(err => console.error('❌ Greška pri spajanju na PostgreSQL:', err));
@@ -351,3 +344,4 @@ app.post('/edit-news', upload.single('slika'), async (req, res) => {
 // -------------------- START SERVER --------------------
 
 app.listen(port, () => console.log(`🚀 Server pokrenut na portu ${port}`));
+
