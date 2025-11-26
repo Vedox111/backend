@@ -311,34 +311,65 @@ app.post('/edit-news', upload.single('slika'), async (req, res) => {
   try {
     const { id, naslov, short, opis, expires_at, is_pinned } = req.body;
     let slikaPath = req.file ? 'images/' + req.file.filename : null;
-    let expiresAt = expires_at ? new Date(expires_at) : null;
 
     if (!id || !naslov || !short || !opis) {
-      return res.status(400).json({ status: 'error', message: 'Svi podaci moraju biti popunjeni!' });
+      return res.status(400).json({
+        status: 'error',
+        message: 'Svi podaci moraju biti popunjeni!'
+      });
     }
 
-    // prvo uzmi postojeće podatke
+    // 1️⃣ Učitaj postojeće podatke iz baze
     const selectResult = await db.query(
       'SELECT image_path, ispinned, expires_at FROM news WHERE id = $1',
       [id]
     );
 
-    const existing = selectResult.rows[0];
-
-    if (!slikaPath) {
-      slikaPath = existing?.image_path || null;
+    if (selectResult.rows.length === 0) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Novost sa datim ID-om ne postoji.'
+      });
     }
 
-    let updatedIspinned = is_pinned === '1' ? true : false;
+    const existing = selectResult.rows[0];
 
-    if (!expiresAt) {
-      expiresAt = existing?.expires_at || null;
+    // 2️⃣ Ako nije poslata nova slika, zadrži staru
+    if (!slikaPath) {
+      slikaPath = existing.image_path || null;
+    }
+
+    // 3️⃣ Pinanje: očekujemo "1" ili "0" iz frontenda
+    let updatedIspinned = existing.ispinned; // default stara vrijednost
+    if (typeof is_pinned !== 'undefined') {
+      updatedIspinned = is_pinned === '1' || is_pinned === 'true';
+    }
+
+    // 4️⃣ Sigurno parsiranje expires_at
+    let expiresAtValue = existing.expires_at || null; // default = što je bilo
+
+    // ako je frontend poslao nešto (npr. ISO string ili prazan string)
+    if (typeof expires_at !== 'undefined') {
+      if (expires_at === '' || expires_at === null) {
+        // korisnik je maknuo datum → NULL u bazi
+        expiresAtValue = null;
+      } else if (typeof expires_at === 'string' && expires_at.length > 10) {
+        const parsed = new Date(expires_at);
+        if (!isNaN(parsed.getTime())) {
+          expiresAtValue = parsed; // pg će sam pretvoriti Date u timestamp
+        }
+        // ako je loše, ostavljamo staru vrijednost iz baze
+      }
     }
 
     const sql = `
       UPDATE news
-      SET title = $1, short = $2, content = $3,
-          image_path = $4, expires_at = $5, ispinned = $6
+      SET title = $1,
+          short = $2,
+          content = $3,
+          image_path = $4,
+          expires_at = $5,
+          ispinned = $6
       WHERE id = $7
     `;
 
@@ -347,20 +378,28 @@ app.post('/edit-news', upload.single('slika'), async (req, res) => {
       short,
       opis,
       slikaPath,
-      expiresAt,
+      expiresAtValue,
       updatedIspinned,
       id
     ]);
 
-    res.json({ status: 'success', message: 'Novost je uspješno ažurirana.' });
+    res.json({
+      status: 'success',
+      message: 'Novost je uspješno ažurirana.'
+    });
   } catch (err) {
-    console.error('Greška pri ažuriranju novosti:', err);
-    res.status(500).json({ status: 'error', message: 'Došlo je do greške pri ažuriranju novosti.' });
+    console.error('❌ Greška pri ažuriranju novosti:', err);
+    res.status(500).json({
+      status: 'error',
+      message: 'Došlo je do greške pri ažuriranju novosti.'
+    });
   }
 });
+
 
 // -------------------- START SERVER --------------------
 
 app.listen(port, () => console.log(`🚀 Server pokrenut na portu ${port}`));
+
 
 
