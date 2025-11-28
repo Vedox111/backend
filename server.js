@@ -90,33 +90,27 @@ const upload = multer({ storage });
 // -------------------- ADD NEWS --------------------
 app.post('/add-news', upload.single('slika'), async (req, res) => {
   try {
-    const { title, content, short, expires_at, is_pinned, slika: slikaUrl } = req.body;
-    const slikaFile = req.file; // ako je došao običan fajl
+    const { title, content, short, expires_at, is_pinned } = req.body;
+    const slika = req.file;
 
-    // mora postojati ili file ili URL
-    if (!title || !content || !short || (!slikaFile && !slikaUrl)) {
+    if (!title || !content || !short || !slika) {
       return res.status(400).send({
         status: 'error',
         message: 'Svi podaci moraju biti popunjeni!'
       });
     }
 
-    let imagePath;
-
-    if (slikaFile) {
-      // stari način – lokalno snimljena slika
-      imagePath = `images/${slikaFile.filename}`;
-    } else {
-      // novi način – URL od Uploadcarea
-      imagePath = slikaUrl;
-    }
-
+    const imagePath = `images/${slika.filename}`;
     const pinned = is_pinned === 'true';
 
+    // 🔹 OVDJE SAMO OČISTIMO VRIJEDNOST ZA expires_at
     let expiresAtValue = null;
+
+    // ako je nešto stiglo i liči na datum (ima barem "YYYY-MM-DDT...")
     if (typeof expires_at === 'string' && expires_at.length > 10) {
-      expiresAtValue = expires_at;
+      expiresAtValue = expires_at;   // šaljemo baš ono što dolazi s fronta
     }
+    // ako je prazno / "T:00.000Z" / glupost → ostaje null
 
     const query = `
       INSERT INTO news (title, content, short, expires_at, image_path, ispinned, created_at)
@@ -127,7 +121,7 @@ app.post('/add-news', upload.single('slika'), async (req, res) => {
       title,
       content,
       short,
-      expiresAtValue,
+      expiresAtValue,  // 👈 sigurno: validan string ili NULL
       imagePath,
       pinned
     ]);
@@ -144,7 +138,6 @@ app.post('/add-news', upload.single('slika'), async (req, res) => {
     });
   }
 });
-
 
 
 // -------------------- BROJ OBJAVA --------------------
