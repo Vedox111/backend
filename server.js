@@ -88,29 +88,30 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 // -------------------- ADD NEWS --------------------
-app.post('/add-news', upload.single('slika'), async (req, res) => {
-  try {
-    const { title, content, short, expires_at, is_pinned } = req.body;
-    const slika = req.file;
+// -------------------- ADD NEWS (Uploadcare URL) --------------------
 
-    if (!title || !content || !short || !slika) {
+app.post('/add-news', async (req, res) => {
+  try {
+    const { title, content, short, expires_at, is_pinned, image_path } = req.body;
+
+    if (!title || !content || !short || !image_path) {
       return res.status(400).send({
         status: 'error',
         message: 'Svi podaci moraju biti popunjeni!'
       });
     }
 
-    const imagePath = `images/${slika.filename}`;
-    const pinned = is_pinned === 'true';
+    // pin (prima i string i broj i bool)
+    const pinned =
+      is_pinned === 'true' ||
+      is_pinned === '1' ||
+      is_pinned === true ||
+      is_pinned === 1;
 
-    // 🔹 OVDJE SAMO OČISTIMO VRIJEDNOST ZA expires_at
     let expiresAtValue = null;
-
-    // ako je nešto stiglo i liči na datum (ima barem "YYYY-MM-DDT...")
     if (typeof expires_at === 'string' && expires_at.length > 10) {
-      expiresAtValue = expires_at;   // šaljemo baš ono što dolazi s fronta
+      expiresAtValue = expires_at; // ISO string
     }
-    // ako je prazno / "T:00.000Z" / glupost → ostaje null
 
     const query = `
       INSERT INTO news (title, content, short, expires_at, image_path, ispinned, created_at)
@@ -121,8 +122,8 @@ app.post('/add-news', upload.single('slika'), async (req, res) => {
       title,
       content,
       short,
-      expiresAtValue,  // 👈 sigurno: validan string ili NULL
-      imagePath,
+      expiresAtValue,
+      image_path,  // ⬅️ sad direktno URL
       pinned
     ]);
 
@@ -138,7 +139,6 @@ app.post('/add-news', upload.single('slika'), async (req, res) => {
     });
   }
 });
-
 
 // -------------------- BROJ OBJAVA --------------------
 
@@ -307,10 +307,11 @@ app.get('/getRaspored', async (req, res) => {
 
 // -------------------- EDIT NEWS (sa slikom) --------------------
 
-app.post('/edit-news', upload.single('slika'), async (req, res) => {
+// -------------------- EDIT NEWS (Uploadcare URL) --------------------
+
+app.post('/edit-news', async (req, res) => {
   try {
-    const { id, naslov, short, opis, expires_at, is_pinned } = req.body;
-    let slikaPath = req.file ? 'images/' + req.file.filename : null;
+    const { id, naslov, short, opis, expires_at, is_pinned, image_path } = req.body;
 
     if (!id || !naslov || !short || !opis) {
       return res.status(400).json({
@@ -335,30 +336,31 @@ app.post('/edit-news', upload.single('slika'), async (req, res) => {
     const existing = selectResult.rows[0];
 
     // 2️⃣ Ako nije poslata nova slika, zadrži staru
-    if (!slikaPath) {
-      slikaPath = existing.image_path || null;
-    }
+    let slikaPath = image_path && image_path.trim() !== ''
+      ? image_path
+      : (existing.image_path || null);
 
-    // 3️⃣ Pinanje: očekujemo "1" ili "0" iz frontenda
-    let updatedIspinned = existing.ispinned; // default stara vrijednost
+    // 3️⃣ Pin (prima 0/1, true/false, "0"/"1"/"true"/"false")
+    let updatedIspinned = existing.ispinned;
     if (typeof is_pinned !== 'undefined') {
-      updatedIspinned = is_pinned === '1' || is_pinned === 'true';
+      updatedIspinned =
+        is_pinned === '1' ||
+        is_pinned === 'true' ||
+        is_pinned === 1 ||
+        is_pinned === true;
     }
 
     // 4️⃣ Sigurno parsiranje expires_at
-    let expiresAtValue = existing.expires_at || null; // default = što je bilo
+    let expiresAtValue = existing.expires_at || null;
 
-    // ako je frontend poslao nešto (npr. ISO string ili prazan string)
     if (typeof expires_at !== 'undefined') {
       if (expires_at === '' || expires_at === null) {
-        // korisnik je maknuo datum → NULL u bazi
         expiresAtValue = null;
       } else if (typeof expires_at === 'string' && expires_at.length > 10) {
         const parsed = new Date(expires_at);
         if (!isNaN(parsed.getTime())) {
-          expiresAtValue = parsed; // pg će sam pretvoriti Date u timestamp
+          expiresAtValue = parsed;
         }
-        // ako je loše, ostavljamo staru vrijednost iz baze
       }
     }
 
@@ -400,6 +402,7 @@ app.post('/edit-news', upload.single('slika'), async (req, res) => {
 // -------------------- START SERVER --------------------
 
 app.listen(port, () => console.log(`🚀 Server pokrenut na portu ${port}`));
+
 
 
 
