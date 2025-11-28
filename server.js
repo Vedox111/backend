@@ -1,10 +1,9 @@
 const express = require('express');
-const { Pool } = require('pg');         // ✅ umjesto mysql2
+const { Pool } = require('pg');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const multer = require('multer');
 const path = require('path');
 
 const app = express();
@@ -15,102 +14,67 @@ app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
 app.use(cors());
 
-// Staticke slike
-app.use('/images', express.static(path.join(__dirname, 'public/images')));
-
-// ✅ PostgreSQL konekcija (Render)
+// -------------------- DATABASE --------------------
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
+
 db.connect()
   .then(() => console.log('✅ Spojen na PostgreSQL'))
-  .catch(err => console.error('❌ Greška pri spajanju na PostgreSQL:', err));
+  .catch(err => console.error('❌ Greška pri spajanju:', err));
 
 const JWT_SECRET = 'tvoj_tajni_kljuc';
 
 // -------------------- LOGIN --------------------
-
 app.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password) {
-      return res.status(400).send({ status: 'error', message: 'Korisničko ime i lozinka su obavezni!' });
-    }
+    if (!username || !password)
+      return res.status(400).json({ status: 'error', message: 'Polja su obavezna' });
 
-    const query = 'SELECT * FROM users WHERE username = $1';
-    const result = await db.query(query, [username]);
-
-    if (result.rows.length === 0) {
-      return res.status(401).send({ status: 'error', message: 'Pogrešno korisničko ime.' });
-    }
+    const result = await db.query('SELECT * FROM users WHERE username = $1', [username]);
+    if (result.rows.length === 0)
+      return res.status(401).json({ status: 'error', message: 'Pogrešno korisničko ime.' });
 
     const user = result.rows[0];
 
-    // Ako user nema lozinku -> postavi ovu prvu
+    // Prvi login → postavi lozinku
     if (!user.password) {
-      const hashedPassword = await bcrypt.hash(password, 10);
-      await db.query('UPDATE users SET password = $1 WHERE id = $2', [
-        hashedPassword,
-        user.id
-      ]);
-      return res.send({ status: 'success', message: 'Lozinka postavljena! Možete se sada prijaviti ponovo.' });
+      const hash = await bcrypt.hash(password, 10);
+      await db.query('UPDATE users SET password = $1 WHERE id = $2', [hash, user.id]);
+      return res.json({ status: 'success', message: 'Lozinka postavljena. Prijavite se ponovo.' });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).send({ status: 'error', message: 'Pogrešna lozinka.' });
-    }
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok)
+      return res.status(401).json({ status: 'error', message: 'Pogrešna lozinka.' });
 
     const token = jwt.sign(
-      { id: user.id, username: user.username, isAdmin: user.isAdmin },
+      { id: user.id, username: user.username, isAdmin: user.isadmin },
       JWT_SECRET,
       { expiresIn: '1h' }
     );
-    res.send({ status: 'success', message: 'Prijava uspješna!', token });
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ status: 'error', message: 'Greška pri prijavi.' });
+
+    res.json({ status: 'success', token });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ status: 'error', message: 'Greška na serveru.' });
   }
 });
-
-// -------------------- MULTER (SLIKE) --------------------
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'public/images');
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, Date.now() + ext);
-  }
-});
-const upload = multer({ storage });
 
 // -------------------- ADD NEWS --------------------
-app.post('/add-news', upload.single('slika'), async (req, res) => {
+app.post('/add-news', async (req, res) => {
   try {
-    const { title, content, short, expires_at, is_pinned } = req.body;
-    const slika = req.file;
+    const { title, content, short, expires_at, is_pinned, image_path } = req.body;
 
-    if (!title || !content || !short || !slika) {
-      return res.status(400).send({
-        status: 'error',
-        message: 'Svi podaci moraju biti popunjeni!'
-      });
-    }
+    if (!title || !content || !short || !image_path)
+      return res.status(400).json({ status: 'error', message: 'Svi podaci moraju biti popunjeni.' });
 
-    const imagePath = `images/${slika.filename}`;
     const pinned = is_pinned === 'true';
 
-    // 🔹 OVDJE SAMO OČISTIMO VRIJEDNOST ZA expires_at
-    let expiresAtValue = null;
-
-    // ako je nešto stiglo i liči na datum (ima barem "YYYY-MM-DDT...")
-    if (typeof expires_at === 'string' && expires_at.length > 10) {
-      expiresAtValue = expires_at;   // šaljemo baš ono što dolazi s fronta
-    }
-    // ako je prazno / "T:00.000Z" / glupost → ostaje null
+    const expiresAtValue =
+      typeof expires_at === 'string' && expires_at.length > 10 ? expires_at : null;
 
     const query = `
       INSERT INTO news (title, content, short, expires_at, image_path, ispinned, created_at)
@@ -121,39 +85,30 @@ app.post('/add-news', upload.single('slika'), async (req, res) => {
       title,
       content,
       short,
-      expiresAtValue,  // 👈 sigurno: validan string ili NULL
-      imagePath,
+      expiresAtValue,
+      image_path, // 👈 CDN URL iz Uploadcare
       pinned
     ]);
 
-    res.status(200).send({
-      status: 'success',
-      message: 'Novost uspješno dodata!'
-    });
+    res.json({ status: 'success', message: 'Novost dodana!' });
   } catch (err) {
-    console.error('Greška pri unosu novosti:', err);
-    res.status(500).send({
-      status: 'error',
-      message: 'Došlo je do greške pri dodavanju novosti.'
-    });
+    console.error('Greška pri unosu:', err);
+    res.status(500).json({ status: 'error', message: 'Greška pri dodavanju novosti.' });
   }
 });
 
-
-// -------------------- BROJ OBJAVA --------------------
-
+// -------------------- GET NEWS COUNT --------------------
 app.get('/get-news-count', async (req, res) => {
   try {
     const result = await db.query('SELECT COUNT(*) AS count FROM news');
-    res.send({ count: Number(result.rows[0].count) });
+    res.json({ count: Number(result.rows[0].count) });
   } catch (err) {
-    console.error('Greška pri dohvatku broja objava:', err);
-    res.status(500).send({ status: 'error', message: 'Greška pri dohvatku broja objava.' });
+    console.error(err);
+    res.status(500).json({ status: 'error' });
   }
 });
 
-// -------------------- GET NEWS (paginacija) --------------------
-
+// -------------------- GET NEWS --------------------
 app.get('/get-news', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -165,108 +120,100 @@ app.get('/get-news', async (req, res) => {
       [limit, offset]
     );
 
-    const countResult = await db.query('SELECT COUNT(*) AS count FROM news');
-    const totalNewsCount = Number(countResult.rows[0].count);
-    const totalPages = Math.ceil(totalNewsCount / limit);
+    const totalCount = await db.query('SELECT COUNT(*) AS count FROM news');
+    const totalPages = Math.ceil(Number(totalCount.rows[0].count) / limit);
 
     const now = new Date();
-    const novosti = newsResult.rows.map(novost => {
-      const expiresAt = novost.expires_at ? new Date(novost.expires_at) : null;
-      if (expiresAt && expiresAt < now) {
-        return { ...novost, isExpired: true };
-      } else {
-        return {
-          ...novost,
-          isExpired: false,
-          expires_in: expiresAt ? expiresAt.getTime() - now.getTime() : null
-        };
-      }
+    const novosti = newsResult.rows.map(n => {
+      const exp = n.expires_at ? new Date(n.expires_at) : null;
+      return {
+        ...n,
+        isExpired: exp ? exp < now : false,
+        expires_in: exp ? exp.getTime() - now.getTime() : null
+      };
     });
 
     res.json({ novosti, totalPages });
   } catch (err) {
-    console.error('Greška pri dohvatku novosti:', err);
-    res.status(500).send({ status: 'error', message: 'Greška pri dohvatku novosti.' });
+    console.error(err);
+    res.status(500).json({ status: 'error' });
   }
 });
 
 // -------------------- DELETE NEWS --------------------
-
 app.delete('/delete-news/:id', async (req, res) => {
   try {
-    const newsId = req.params.id;
-    await db.query('DELETE FROM news WHERE id = $1', [newsId]);
-    res.send({ status: 'success', message: '✅ Novost uspješno obrisana!' });
+    await db.query('DELETE FROM news WHERE id = $1', [req.params.id]);
+    res.json({ status: 'success', message: 'Novost obrisana.' });
   } catch (err) {
-    console.error('❌ Greška pri brisanju novosti:', err);
-    res.status(500).send({ status: 'error', message: 'Greška pri brisanju novosti.' });
+    console.error(err);
+    res.status(500).json({ status: 'error' });
   }
 });
 
 // -------------------- UPDATE NEWS (bez slike) --------------------
-
 app.post('/update-news/:id', async (req, res) => {
   try {
     const { title, content, short, expires_at } = req.body;
     const id = req.params.id;
 
-    const query = `
-      UPDATE news
-      SET title = $1, content = $2, short = $3, expires_at = $4
-      WHERE id = $5
-    `;
-    await db.query(query, [title, content, short, expires_at || null, id]);
-
-    res.json({ message: 'Novost uspješno izmijenjena!' });
-  } catch (err) {
-    console.error('Greška pri izmjeni novosti:', err);
-    res.status(500).send({ status: 'error', message: 'Greška pri izmjeni novosti.' });
-  }
-});
-
-// -------------------- DOHVATI-NOVOSTI (drugi endpoint) --------------------
-
-app.get('/dohvati-novosti', async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = 6;
-    const offset = (page - 1) * limit;
-
-    const result = await db.query(
-      'SELECT * FROM news ORDER BY created_at DESC LIMIT $1 OFFSET $2',
-      [limit, offset]
+    await db.query(
+      `UPDATE news SET title=$1, content=$2, short=$3, expires_at=$4 WHERE id=$5`,
+      [title, content, short, expires_at || null, id]
     );
 
-    res.json({ novosti: result.rows });
+    res.json({ message: 'Novost izmijenjena.' });
   } catch (err) {
-    console.error('Greška pri dohvatku novosti:', err);
-    res.status(500).send({ status: 'error', message: 'Greška pri dohvatku novosti.' });
+    console.error(err);
+    res.status(500).json({ status: 'error' });
   }
 });
 
-// -------------------- DOHVATI-BROJ-NOVOSTI (drugi endpoint) --------------------
-
-app.get('/dohvati-broj-novosti', async (req, res) => {
+// -------------------- UPDATE NEWS (sa novom slikom preko CDN URL-a) --------------------
+app.post('/edit-news', async (req, res) => {
   try {
-    const result = await db.query('SELECT COUNT(*) AS count FROM news');
-    res.send({ count: Number(result.rows[0].count) });
+    const { id, naslov, short, opis, expires_at, is_pinned, image_path } = req.body;
+
+    if (!id || !naslov || !short || !opis)
+      return res.status(400).json({ status: 'error', message: 'Polja su obavezna.' });
+
+    const existing = await db.query('SELECT * FROM news WHERE id=$1', [id]);
+    if (existing.rows.length === 0)
+      return res.status(404).json({ status: 'error', message: 'Ne postoji.' });
+
+    const old = existing.rows[0];
+
+    const finalImage = image_path || old.image_path;
+    const finalPinned =
+      typeof is_pinned !== 'undefined'
+        ? is_pinned === 'true' || is_pinned === '1'
+        : old.ispinned;
+
+    let expiresAtVal = old.expires_at;
+    if (typeof expires_at !== 'undefined') {
+      if (expires_at === '' || expires_at === null) expiresAtVal = null;
+      else if (expires_at.length > 10) expiresAtVal = new Date(expires_at);
+    }
+
+    await db.query(
+      `UPDATE news SET title=$1, short=$2, content=$3, image_path=$4, expires_at=$5, ispinned=$6 WHERE id=$7`,
+      [naslov, short, opis, finalImage, expiresAtVal, finalPinned, id]
+    );
+
+    res.json({ status: 'success', message: 'Izmijenjeno.' });
   } catch (err) {
-    console.error('Greška pri dohvatku broja novosti:', err);
-    res.status(500).send({ status: 'error', message: 'Greška pri dohvatku broja novosti.' });
+    console.error(err);
+    res.status(500).json({ status: 'error' });
   }
 });
 
-// -------------------- RASPORED: UPDATE --------------------
-
+// -------------------- RASPORED UPDATE --------------------
 app.post('/updateRaspored', async (req, res) => {
   try {
-    const updatedRows = req.body.rows || [];
-
-    // obrisati sve
+    const rows = req.body.rows || [];
     await db.query('DELETE FROM raspored');
 
-    // ubaciti red po red (jednostavno – raspored je ionako mali)
-    const insertSQL = `
+    const sql = `
       INSERT INTO raspored
       (ponedjeljak, ponedjeljak_time, utorak, utorak_time,
        srijeda, srijeda_time, cetvrtak, cetvrtak_time,
@@ -274,132 +221,34 @@ app.post('/updateRaspored', async (req, res) => {
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
     `;
 
-    for (const row of updatedRows) {
-      await db.query(insertSQL, [
-        row.ponedjeljak || null, row.ponedjeljak_time || null,
-        row.utorak || null, row.utorak_time || null,
-        row.srijeda || null, row.srijeda_time || null,
-        row.cetvrtak || null, row.cetvrtak_time || null,
-        row.petak || null, row.petak_time || null,
-        row.subota || null, row.subota_time || null
+    for (const r of rows) {
+      await db.query(sql, [
+        r.ponedjeljak || null, r.ponedjeljak_time || null,
+        r.utorak || null, r.utorak_time || null,
+        r.srijeda || null, r.srijeda_time || null,
+        r.cetvrtak || null, r.cetvrtak_time || null,
+        r.petak || null, r.petak_time || null,
+        r.subota || null, r.subota_time || null
       ]);
     }
 
-    console.log('Raspored uspješno ažuriran!');
     res.json({ success: true });
   } catch (err) {
-    console.error('Greška pri ažuriranju rasporeda:', err);
+    console.error(err);
     res.json({ success: false });
   }
 });
 
-// -------------------- RASPORED: GET --------------------
-
+// -------------------- GET RASPORED --------------------
 app.get('/getRaspored', async (req, res) => {
   try {
     const result = await db.query('SELECT * FROM raspored');
     res.json({ rows: result.rows });
   } catch (err) {
-    console.error('Greška prilikom upita:', err);
+    console.error(err);
     res.json({ success: false });
   }
 });
 
-// -------------------- EDIT NEWS (sa slikom) --------------------
-
-app.post('/edit-news', upload.single('slika'), async (req, res) => {
-  try {
-    const { id, naslov, short, opis, expires_at, is_pinned } = req.body;
-    let slikaPath = req.file ? 'images/' + req.file.filename : null;
-
-    if (!id || !naslov || !short || !opis) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Svi podaci moraju biti popunjeni!'
-      });
-    }
-
-    // 1️⃣ Učitaj postojeće podatke iz baze
-    const selectResult = await db.query(
-      'SELECT image_path, ispinned, expires_at FROM news WHERE id = $1',
-      [id]
-    );
-
-    if (selectResult.rows.length === 0) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Novost sa datim ID-om ne postoji.'
-      });
-    }
-
-    const existing = selectResult.rows[0];
-
-    // 2️⃣ Ako nije poslata nova slika, zadrži staru
-    if (!slikaPath) {
-      slikaPath = existing.image_path || null;
-    }
-
-    // 3️⃣ Pinanje: očekujemo "1" ili "0" iz frontenda
-    let updatedIspinned = existing.ispinned; // default stara vrijednost
-    if (typeof is_pinned !== 'undefined') {
-      updatedIspinned = is_pinned === '1' || is_pinned === 'true';
-    }
-
-    // 4️⃣ Sigurno parsiranje expires_at
-    let expiresAtValue = existing.expires_at || null; // default = što je bilo
-
-    // ako je frontend poslao nešto (npr. ISO string ili prazan string)
-    if (typeof expires_at !== 'undefined') {
-      if (expires_at === '' || expires_at === null) {
-        // korisnik je maknuo datum → NULL u bazi
-        expiresAtValue = null;
-      } else if (typeof expires_at === 'string' && expires_at.length > 10) {
-        const parsed = new Date(expires_at);
-        if (!isNaN(parsed.getTime())) {
-          expiresAtValue = parsed; // pg će sam pretvoriti Date u timestamp
-        }
-        // ako je loše, ostavljamo staru vrijednost iz baze
-      }
-    }
-
-    const sql = `
-      UPDATE news
-      SET title = $1,
-          short = $2,
-          content = $3,
-          image_path = $4,
-          expires_at = $5,
-          ispinned = $6
-      WHERE id = $7
-    `;
-
-    await db.query(sql, [
-      naslov,
-      short,
-      opis,
-      slikaPath,
-      expiresAtValue,
-      updatedIspinned,
-      id
-    ]);
-
-    res.json({
-      status: 'success',
-      message: 'Novost je uspješno ažurirana.'
-    });
-  } catch (err) {
-    console.error('❌ Greška pri ažuriranju novosti:', err);
-    res.status(500).json({
-      status: 'error',
-      message: 'Došlo je do greške pri ažuriranju novosti.'
-    });
-  }
-});
-
-
-// -------------------- START SERVER --------------------
-
-app.listen(port, () => console.log(`🚀 Server pokrenut na portu ${port}`));
-
-
-
+// -------------------- START --------------------
+app.listen(port, () => console.log(`🚀 Server radi na portu ${port}`));
